@@ -1,5 +1,6 @@
 const pageSections = [...document.querySelectorAll(".page-view")];
 let pageTransitioning = false;
+let chapterTransitioning = false;
 let stepLetterScreen = null;
 let setLetterScreen = null;
 
@@ -49,6 +50,15 @@ document.getElementById("fullscreen-start")?.addEventListener("click", async () 
 document.getElementById("book-previous")?.addEventListener("click", () => navigateStory(-1));
 document.getElementById("book-next")?.addEventListener("click", () => navigateStory(1));
 
+function clearLivePageDrag(element) {
+  if (!element?.classList.contains("is-live-dragging")) return;
+  element.classList.remove("is-live-dragging");
+  element.style.transition = "";
+  element.style.transform = "";
+  element.style.transformOrigin = "";
+  element.style.filter = "";
+}
+
 function showPage(pageNumber, direction = 0) {
   const targetPage = pageSections.find((page) => page.dataset.page === String(pageNumber));
   const currentPage = pageSections.find((page) => !page.hidden);
@@ -65,6 +75,7 @@ function showPage(pageNumber, direction = 0) {
   targetPage.classList.add("is-sliding-in", incomingClass);
   currentPage.classList.add("is-sliding-out", outgoingClass, turnClass);
   void targetPage.offsetWidth;
+  clearLivePageDrag(currentPage);
   targetPage.scrollTop = 0;
   window.requestAnimationFrame(() => targetPage.classList.remove(incomingClass));
 
@@ -86,15 +97,16 @@ function showPage(pageNumber, direction = 0) {
 }
 
 function navigateStory(direction) {
-  if (pageTransitioning) return;
+  if (pageTransitioning || chapterTransitioning) return false;
   const activePage = pageSections.find((page) => !page.hidden);
-  if (!activePage) return;
+  if (!activePage) return false;
   const currentNumber = Number(activePage.dataset.page);
 
-  if (currentNumber === 3 && stepLetterScreen?.(direction)) return;
+  if (currentNumber === 3 && stepLetterScreen?.(direction)) return true;
   if (currentNumber === 4 && direction < 0) setLetterScreen?.(6);
   const destination = currentNumber + direction;
-  if (destination >= 1 && destination <= 5) showPage(destination, direction);
+  if (destination >= 1 && destination <= 5) return showPage(destination, direction);
+  return false;
 }
 
 const ignoredGestureTarget = (target) => target instanceof Element && target.closest(
@@ -105,20 +117,55 @@ let gestureStart = null;
 const gestureSurface = document.getElementById("site-pages");
 gestureSurface?.addEventListener("pointerdown", (event) => {
   if (!event.isPrimary || (event.pointerType === "mouse" && event.button !== 0) || ignoredGestureTarget(event.target)) return;
-  gestureStart = { id: event.pointerId, x: event.clientX, y: event.clientY, pointerType: event.pointerType };
+  const activePage = pageSections.find((page) => !page.hidden);
+  const dragElement = activePage?.dataset.page === "3"
+    ? activePage.querySelector(".page3-part.is-active")
+    : activePage;
+  gestureStart = { id: event.pointerId, x: event.clientX, y: event.clientY, pointerType: event.pointerType, dragElement };
+  try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* Pointer capture is optional. */ }
+});
+gestureSurface?.addEventListener("pointermove", (event) => {
+  if (!gestureStart || gestureStart.id !== event.pointerId || !gestureStart.dragElement) return;
+  const dx = event.clientX - gestureStart.x;
+  const dy = event.clientY - gestureStart.y;
+  if (Math.abs(dx) < 8 || Math.abs(dx) < Math.abs(dy) * 1.15) return;
+  const progress = Math.min(1, Math.abs(dx) / Math.max(window.innerWidth, 1));
+  const angle = Math.round(progress * 174) * (dx < 0 ? -1 : 1);
+  const sheet = gestureStart.dragElement;
+  sheet.classList.add("is-live-dragging");
+  sheet.style.transition = "none";
+  sheet.style.transformOrigin = dx < 0 ? "left center" : "right center";
+  sheet.style.transform = `rotateY(${angle}deg) rotateZ(${dx < 0 ? "-.8deg" : ".8deg"})`;
+  sheet.style.filter = `brightness(${1 - progress * .36})`;
 });
 gestureSurface?.addEventListener("pointerup", (event) => {
   if (!gestureStart || gestureStart.id !== event.pointerId) return;
   const start = gestureStart;
   gestureStart = null;
-  if (window.getSelection()?.toString()) return;
+  if (window.getSelection()?.toString()) {
+    resetLivePageDrag(start.dragElement);
+    return;
+  }
   const dx = event.clientX - start.x;
   const dy = event.clientY - start.y;
-  const threshold = start.pointerType === "mouse" ? 85 : 48;
-  if (Math.abs(dx) < threshold || Math.abs(dx) < Math.abs(dy) * 1.35 || Math.abs(dy) > 110) return;
-  navigateStory(dx < 0 ? 1 : -1);
+  const threshold = start.pointerType === "mouse" ? 85 : Math.max(48, window.innerWidth * .2);
+  if (Math.abs(dx) < threshold || Math.abs(dx) < Math.abs(dy) * 1.35 || Math.abs(dy) > 110) {
+    resetLivePageDrag(start.dragElement);
+    return;
+  }
+  if (!navigateStory(dx < 0 ? 1 : -1)) resetLivePageDrag(start.dragElement);
 });
-gestureSurface?.addEventListener("pointercancel", () => { gestureStart = null; });
+function resetLivePageDrag(element) {
+  if (!element?.classList.contains("is-live-dragging")) return;
+  element.style.transition = "transform 260ms ease, filter 260ms ease";
+  element.style.transform = "rotateY(0deg)";
+  element.style.filter = "brightness(1)";
+  window.setTimeout(() => clearLivePageDrag(element), 280);
+}
+gestureSurface?.addEventListener("pointercancel", () => {
+  resetLivePageDrag(gestureStart?.dragElement);
+  gestureStart = null;
+});
 
 document.addEventListener("keydown", (event) => {
   if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || window.getSelection()?.toString()) return;
@@ -230,12 +277,24 @@ if (page3Scene && page3Paper) {
   page3Paper.replaceChildren(...screens);
   let activeScreen = 0;
   const showLetterScreen = (nextIndex, direction = 1) => {
-    if (nextIndex < 0 || nextIndex >= screens.length) return;
-    screens[activeScreen].classList.remove("is-active", "letter-slide-from-left", "letter-slide-from-right");
+    if (nextIndex < 0 || nextIndex >= screens.length || nextIndex === activeScreen || chapterTransitioning) return;
+    chapterTransitioning = true;
+    const outgoingSection = screens[activeScreen];
     activeScreen = nextIndex;
     const activeSection = screens[activeScreen];
-    activeSection.classList.add("is-active", direction > 0 ? "letter-slide-from-right" : "letter-slide-from-left");
-    window.setTimeout(() => activeSection.classList.remove("letter-slide-from-left", "letter-slide-from-right"), 420);
+    const turnClass = direction > 0 ? "chapter-turn-forward" : "chapter-turn-backward";
+    activeSection.classList.add("is-active", "chapter-page-under");
+    outgoingSection.classList.add("chapter-page-turning", turnClass);
+    void activeSection.offsetWidth;
+    window.requestAnimationFrame(() => {
+      outgoingSection.classList.add("chapter-page-turned");
+      clearLivePageDrag(outgoingSection);
+    });
+    window.setTimeout(() => {
+      outgoingSection.classList.remove("is-active", "chapter-page-turning", "chapter-page-turned", "chapter-turn-forward", "chapter-turn-backward");
+      activeSection.classList.remove("chapter-page-under");
+      chapterTransitioning = false;
+    }, 820);
     activeLetterChapter = activeScreen + 1;
     updateBookProgress();
     page3Scene.dataset.letterPart = String(activeScreen + 1);
