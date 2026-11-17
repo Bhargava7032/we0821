@@ -1,8 +1,7 @@
 const pageSections = [...document.querySelectorAll(".page-view")];
+const totalBookPages = pageSections.length + 6;
 let pageTransitioning = false;
-let chapterTransitioning = false;
-let stepLetterScreen = null;
-let setLetterScreen = null;
+let stepLetterPage = null;
 
 // Browsers only allow fullscreen after a user gesture. Request it on the
 // visitor's first interaction, so the first tap/click that starts the story
@@ -27,14 +26,18 @@ async function requestStoryFullscreen() {
 const fullscreenWelcome = document.getElementById("fullscreen-welcome");
 const bookControls = document.getElementById("book-controls");
 const bookProgress = document.getElementById("book-progress");
-let activeLetterChapter = 1;
+let activeLetterPageIndex = 0;
 
 function updateBookProgress() {
   const activePage = pageSections.find((page) => !page.hidden);
   if (!activePage || !bookProgress) return;
-  bookProgress.textContent = activePage.dataset.page === "3"
-    ? `Chapter ${activeLetterChapter} of 7`
-    : `Page ${activePage.dataset.page} of ${pageSections.length}`;
+  const pageNumber = Number(activePage.dataset.page);
+  const bookPageNumber = pageNumber === 3
+    ? pageNumber + activeLetterPageIndex
+    : pageNumber > 3
+      ? pageNumber + 6
+      : pageNumber;
+  bookProgress.textContent = `Page ${bookPageNumber} of ${totalBookPages}`;
 }
 
 document.getElementById("fullscreen-start")?.addEventListener("click", async () => {
@@ -72,12 +75,14 @@ function showPage(pageNumber, direction = 0) {
   targetPage.hidden = false;
   targetPage.setAttribute("aria-hidden", "false");
   currentPage.setAttribute("aria-hidden", "true");
-  targetPage.classList.add("is-sliding-in", incomingClass);
+  targetPage.classList.add("is-sliding-in", incomingClass, slideDirection > 0 ? "book-page-under-forward" : "book-page-under-backward");
   currentPage.classList.add("is-sliding-out", outgoingClass, turnClass);
   void targetPage.offsetWidth;
   clearLivePageDrag(currentPage);
   targetPage.scrollTop = 0;
-  window.requestAnimationFrame(() => targetPage.classList.remove(incomingClass));
+  window.requestAnimationFrame(() => {
+    targetPage.classList.remove(incomingClass);
+  });
 
   let finished = false;
   const finishTransition = () => {
@@ -85,25 +90,24 @@ function showPage(pageNumber, direction = 0) {
     finished = true;
     currentPage.hidden = true;
     currentPage.classList.remove("is-sliding-out", outgoingClass, turnClass);
-    targetPage.classList.remove("is-sliding-in");
+    targetPage.classList.remove("is-sliding-in", "book-page-under-forward", "book-page-under-backward");
     pageTransitioning = false;
     updateBookProgress();
   };
-  targetPage.addEventListener("transitionend", (event) => {
-    if (event.target === targetPage && event.propertyName === "transform") finishTransition();
+  currentPage.addEventListener("animationend", (event) => {
+    if (event.target === currentPage && event.animationName.startsWith("real-page-")) finishTransition();
   }, { once: true });
-  window.setTimeout(finishTransition, 800);
+  window.setTimeout(finishTransition, 1050);
   return true;
 }
 
 function navigateStory(direction) {
-  if (pageTransitioning || chapterTransitioning) return false;
+  if (pageTransitioning) return false;
   const activePage = pageSections.find((page) => !page.hidden);
   if (!activePage) return false;
   const currentNumber = Number(activePage.dataset.page);
 
-  if (currentNumber === 3 && stepLetterScreen?.(direction)) return true;
-  if (currentNumber === 4 && direction < 0) setLetterScreen?.(6);
+  if (currentNumber === 3 && stepLetterPage?.(direction)) return true;
   const destination = currentNumber + direction;
   if (destination >= 1 && destination <= 5) return showPage(destination, direction);
   return false;
@@ -130,7 +134,7 @@ gestureSurface?.addEventListener("pointermove", (event) => {
   const dy = event.clientY - gestureStart.y;
   if (Math.abs(dx) < 8 || Math.abs(dx) < Math.abs(dy) * 1.15) return;
   const progress = Math.min(1, Math.abs(dx) / Math.max(window.innerWidth, 1));
-  const angle = Math.round(progress * 174) * (dx < 0 ? -1 : 1);
+  const angle = Math.round(progress * 148) * (dx < 0 ? -1 : 1);
   const sheet = gestureStart.dragElement;
   sheet.classList.add("is-live-dragging");
   sheet.style.transition = "none";
@@ -208,7 +212,7 @@ addFloatingParticles(".page3-particles", 18, 4, [17, 13]);
 addFloatingParticles(".page4-particles", isSmallScreen ? 10 : 18, 4, [17, 13]);
 addFloatingParticles(".page10-particles", isSmallScreen ? 12 : 22, 5, [16, 14]);
 
-// Turn the existing Page 3 letter nodes into seven in-page screens without
+// Turn the existing Page 3 letter nodes into seven book pages without
 // copying or editing any of the original letter text.
 const page3Scene = document.querySelector(".page3-scene");
 const page3Paper = document.querySelector(".page3-paper");
@@ -218,7 +222,7 @@ if (page3Scene && page3Paper) {
   const letterSections = [...page3Paper.querySelectorAll(":scope > .page3-letter-section")];
   const letterParagraphs = [...page3Paper.querySelectorAll("p, blockquote")]
     .filter((node) => !node.classList.contains("page3-eyebrow"));
-  const screenTitles = [
+  const pageTitles = [
     "Nee Santhosham – Naa Santhosham",
     "Nee Father's Love",
     "Nee Family – Naa Family",
@@ -227,8 +231,7 @@ if (page3Scene && page3Paper) {
     "Trust, Understanding & Respect",
     "Forever – I Choose You",
   ];
-  // Paragraph nodes are moved intact. These thematic groups balance the
-  // longest original sections so every chapter can fit a single viewport.
+  // Paragraph nodes are moved intact. These groups balance the page lengths.
   const paragraphGroups = [
     [0, 1, 2, 3, 4, 5, 6, 52, 55],
     [7, 8, 9, 10, 11, 49, 56, 57],
@@ -245,9 +248,9 @@ if (page3Scene && page3Paper) {
     divider.innerHTML = "<span></span><b>♡</b><span></span>";
     return divider;
   };
-  const screens = screenTitles.map((title, index) => {
-    const screen = document.createElement("section");
-    screen.className = `page3-part page3-part--${index + 1}${index === 0 ? " is-active" : ""}`;
+  const letterPages = pageTitles.map((title, index) => {
+    const letterPage = document.createElement("section");
+    letterPage.className = `page3-part page3-part--${index + 1}${index === 0 ? " is-active" : ""}`;
     const heading = index === 0
       ? document.createElement("h2")
       : letterSections[index - 1].querySelector("h2");
@@ -256,57 +259,61 @@ if (page3Scene && page3Paper) {
       heading.id = "page3-part-1-title";
       heading.textContent = title;
     }
-    screen.setAttribute("aria-labelledby", heading.id);
-    screen.append(heading, createDivider());
+    letterPage.setAttribute("aria-labelledby", heading.id);
+    letterPage.setAttribute("aria-hidden", String(index !== 0));
+    letterPage.append(heading, createDivider());
     if (index === 0) {
-      screen.append(letterHeading);
+      letterPage.append(letterHeading);
       letterHeading.hidden = true;
     }
     for (const paragraphIndex of paragraphGroups[index]) {
       const paragraph = letterParagraphs[paragraphIndex];
-      if (paragraph) screen.append(paragraph);
+      if (paragraph) letterPage.append(paragraph);
     }
-    screen.append(createDivider());
-    return screen;
+    letterPage.append(createDivider());
+    return letterPage;
   });
 
   page3Paper.querySelectorAll("p > strong").forEach((promise) => {
     if (!promise.closest(".page3-salutation")) promise.classList.add("page3-promise-highlight");
   });
 
-  page3Paper.replaceChildren(...screens);
-  let activeScreen = 0;
-  const showLetterScreen = (nextIndex, direction = 1) => {
-    if (nextIndex < 0 || nextIndex >= screens.length || nextIndex === activeScreen || chapterTransitioning) return;
-    chapterTransitioning = true;
-    const outgoingSection = screens[activeScreen];
-    activeScreen = nextIndex;
-    const activeSection = screens[activeScreen];
-    const turnClass = direction > 0 ? "chapter-turn-forward" : "chapter-turn-backward";
-    activeSection.classList.add("is-active", "chapter-page-under");
-    outgoingSection.classList.add("chapter-page-turning", turnClass);
-    void activeSection.offsetWidth;
-    window.requestAnimationFrame(() => {
-      outgoingSection.classList.add("chapter-page-turned");
-      clearLivePageDrag(outgoingSection);
-    });
+  page3Paper.replaceChildren(...letterPages);
+  const showLetterPage = (nextIndex, direction = 1) => {
+    if (nextIndex < 0 || nextIndex >= letterPages.length || nextIndex === activeLetterPageIndex || pageTransitioning) return;
+    pageTransitioning = true;
+    const outgoingPage = letterPages[activeLetterPageIndex];
+    activeLetterPageIndex = nextIndex;
+    const activePage = letterPages[activeLetterPageIndex];
+    const turnClass = direction > 0 ? "book-turn-forward" : "book-turn-backward";
+    const underPageClass = direction > 0 ? "book-page-under-forward" : "book-page-under-backward";
+    outgoingPage.classList.add("is-sliding-out", turnClass);
+    activePage.classList.add("is-active", underPageClass);
+    activePage.setAttribute("aria-hidden", "false");
+    outgoingPage.setAttribute("aria-hidden", "true");
+    void activePage.offsetWidth;
+    clearLivePageDrag(outgoingPage);
     window.setTimeout(() => {
-      outgoingSection.classList.remove("is-active", "chapter-page-turning", "chapter-page-turned", "chapter-turn-forward", "chapter-turn-backward");
-      activeSection.classList.remove("chapter-page-under");
-      chapterTransitioning = false;
-    }, 820);
-    activeLetterChapter = activeScreen + 1;
+      outgoingPage.classList.remove("is-active", "is-sliding-out", turnClass);
+      activePage.classList.remove(underPageClass);
+      pageTransitioning = false;
+    }, 1050);
+    outgoingPage.addEventListener("animationend", (event) => {
+      if (event.target !== outgoingPage || !event.animationName.startsWith("real-page-")) return;
+      outgoingPage.classList.remove("is-active", "is-sliding-out", turnClass);
+      activePage.classList.remove(underPageClass);
+      pageTransitioning = false;
+    }, { once: true });
     updateBookProgress();
-    page3Scene.dataset.letterPart = String(activeScreen + 1);
+    page3Scene.dataset.letterPage = String(activeLetterPageIndex + 1);
   };
-  stepLetterScreen = (direction) => {
-    const nextIndex = activeScreen + direction;
-    if (nextIndex < 0 || nextIndex >= screens.length) return false;
-    showLetterScreen(nextIndex, direction);
+  stepLetterPage = (direction) => {
+    const nextIndex = activeLetterPageIndex + direction;
+    if (nextIndex < 0 || nextIndex >= letterPages.length) return false;
+    showLetterPage(nextIndex, direction);
     return true;
   };
-  setLetterScreen = (index) => showLetterScreen(index, index >= activeScreen ? 1 : -1);
-  page3Scene.dataset.letterPart = "1";
+  page3Scene.dataset.letterPage = "1";
 }
 
 const yesButton = document.getElementById("proposal-accept-yes");
