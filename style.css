@@ -12,6 +12,25 @@ html, body { width: 100%; height: 100%; margin: 0; }
 body { overflow: hidden; background: var(--ink); color: var(--rose); font-family: var(--ui); }
 button { font: inherit; }
 
+.fullscreen-welcome {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  background: radial-gradient(ellipse at 50% 42%, rgba(112, 0, 28, .42), transparent 58%), #090507;
+}
+.fullscreen-welcome[hidden] { display: none; }
+.fullscreen-welcome-card { width: min(100%, 35rem); padding: clamp(2rem, 6vw, 4rem) clamp(1.25rem, 5vw, 3rem); border: 1px solid rgba(255, 113, 141, .58); border-radius: 1.5rem; background: rgba(24, 7, 12, .82); text-align: center; box-shadow: 0 0 50px rgba(213, 22, 65, .2), inset 0 0 30px rgba(255,255,255,.025); }
+.fullscreen-welcome-heart { margin: 0 0 .5rem; color: #ff6683; font: 400 clamp(2.8rem, 8vw, 4.5rem)/.9 var(--script); text-shadow: 0 0 18px rgba(255, 39, 77, .65); }
+.fullscreen-welcome-card h1 { margin: 0; color: #ffe3e6; font: 600 clamp(2rem, 6vw, 3.5rem)/1.05 var(--script); }
+.fullscreen-welcome-card > p:not(.fullscreen-welcome-heart, .fullscreen-welcome-note) { margin: 1rem 0 1.5rem; color: #f4cbd2; font-size: clamp(.95rem, 2.5vw, 1.15rem); }
+.fullscreen-welcome-button { min-height: 3.4rem; padding: .65rem 1.7rem; border: 2px solid #ff526b; border-radius: 999px; background: #230811; color: #fff5f6; cursor: pointer; font-size: 1.1rem; box-shadow: 0 0 12px rgba(255,39,77,.65); }
+.fullscreen-welcome-button:hover { background: #3b0a18; }
+.fullscreen-welcome-button:focus-visible { outline: 2px solid #ffd6dd; outline-offset: 5px; }
+.fullscreen-welcome-note { margin: 1rem 0 0; color: #c49ba2; font-size: .75rem; }
+
 .scene {
   position: relative;
   display: grid;

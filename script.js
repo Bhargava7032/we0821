@@ -3,6 +3,32 @@ let pageTransitioning = false;
 let stepLetterScreen = null;
 let setLetterScreen = null;
 
+// Browsers only allow fullscreen after a user gesture. Request it on the
+// visitor's first interaction, so the first tap/click that starts the story
+// also enters fullscreen where the browser supports it.
+let fullscreenRequested = false;
+async function requestStoryFullscreen() {
+  if (fullscreenRequested) return false;
+  fullscreenRequested = true;
+  const root = document.documentElement;
+  const request = root.requestFullscreen || root.webkitRequestFullscreen;
+  if (request) {
+    try {
+      await request.call(root);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+const fullscreenWelcome = document.getElementById("fullscreen-welcome");
+document.getElementById("fullscreen-start")?.addEventListener("click", async () => {
+  await requestStoryFullscreen();
+  if (fullscreenWelcome) fullscreenWelcome.hidden = true;
+});
+
 function showPage(pageNumber, direction = 0) {
   const targetPage = pageSections.find((page) => page.dataset.page === String(pageNumber));
   const currentPage = pageSections.find((page) => !page.hidden);
