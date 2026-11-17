@@ -24,10 +24,30 @@ async function requestStoryFullscreen() {
 }
 
 const fullscreenWelcome = document.getElementById("fullscreen-welcome");
+const bookControls = document.getElementById("book-controls");
+const bookProgress = document.getElementById("book-progress");
+let activeLetterChapter = 1;
+
+function updateBookProgress() {
+  const activePage = pageSections.find((page) => !page.hidden);
+  if (!activePage || !bookProgress) return;
+  bookProgress.textContent = activePage.dataset.page === "3"
+    ? `Chapter ${activeLetterChapter} of 7`
+    : `Page ${activePage.dataset.page} of ${pageSections.length}`;
+}
+
 document.getElementById("fullscreen-start")?.addEventListener("click", async () => {
   await requestStoryFullscreen();
-  if (fullscreenWelcome) fullscreenWelcome.hidden = true;
+  if (fullscreenWelcome) {
+    fullscreenWelcome.classList.add("is-opening");
+    window.setTimeout(() => { fullscreenWelcome.hidden = true; }, 540);
+  }
+  if (bookControls) bookControls.hidden = false;
+  updateBookProgress();
 });
+
+document.getElementById("book-previous")?.addEventListener("click", () => navigateStory(-1));
+document.getElementById("book-next")?.addEventListener("click", () => navigateStory(1));
 
 function showPage(pageNumber, direction = 0) {
   const targetPage = pageSections.find((page) => page.dataset.page === String(pageNumber));
@@ -37,12 +57,13 @@ function showPage(pageNumber, direction = 0) {
   const slideDirection = direction || (Number(targetPage.dataset.page) > Number(currentPage.dataset.page) ? 1 : -1);
   const incomingClass = slideDirection > 0 ? "slide-from-right" : "slide-from-left";
   const outgoingClass = slideDirection > 0 ? "slide-out-left" : "slide-out-right";
+  const turnClass = slideDirection > 0 ? "book-turn-forward" : "book-turn-backward";
   pageTransitioning = true;
   targetPage.hidden = false;
   targetPage.setAttribute("aria-hidden", "false");
   currentPage.setAttribute("aria-hidden", "true");
   targetPage.classList.add("is-sliding-in", incomingClass);
-  currentPage.classList.add("is-sliding-out", outgoingClass);
+  currentPage.classList.add("is-sliding-out", outgoingClass, turnClass);
   void targetPage.offsetWidth;
   targetPage.scrollTop = 0;
   window.requestAnimationFrame(() => targetPage.classList.remove(incomingClass));
@@ -52,14 +73,15 @@ function showPage(pageNumber, direction = 0) {
     if (finished) return;
     finished = true;
     currentPage.hidden = true;
-    currentPage.classList.remove("is-sliding-out", outgoingClass);
+    currentPage.classList.remove("is-sliding-out", outgoingClass, turnClass);
     targetPage.classList.remove("is-sliding-in");
     pageTransitioning = false;
+    updateBookProgress();
   };
   targetPage.addEventListener("transitionend", (event) => {
     if (event.target === targetPage && event.propertyName === "transform") finishTransition();
   }, { once: true });
-  window.setTimeout(finishTransition, 520);
+  window.setTimeout(finishTransition, 800);
   return true;
 }
 
@@ -214,6 +236,8 @@ if (page3Scene && page3Paper) {
     const activeSection = screens[activeScreen];
     activeSection.classList.add("is-active", direction > 0 ? "letter-slide-from-right" : "letter-slide-from-left");
     window.setTimeout(() => activeSection.classList.remove("letter-slide-from-left", "letter-slide-from-right"), 420);
+    activeLetterChapter = activeScreen + 1;
+    updateBookProgress();
     page3Scene.dataset.letterPart = String(activeScreen + 1);
   };
   stepLetterScreen = (direction) => {

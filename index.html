@@ -9,17 +9,18 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;500;600;700&family=Cormorant+Garamond:wght@400;500;600;700&family=Manrope:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="./style.css?v=24">
-    <script src="./script.js?v=24" defer></script>
+    <link rel="stylesheet" href="./style.css?v=25">
+    <script src="./script.js?v=25" defer></script>
   </head>
   <body>
     <div class="fullscreen-welcome" id="fullscreen-welcome">
       <div class="fullscreen-welcome-card">
+        <p class="fullscreen-welcome-kicker">A keepsake for you</p>
         <p class="fullscreen-welcome-heart" aria-hidden="true">♡</p>
-        <h1>A little something for you</h1>
-        <p>Tap below to open your surprise in fullscreen.</p>
-        <button class="fullscreen-welcome-button" id="fullscreen-start" type="button">Tap to Begin <span aria-hidden="true">❤️</span></button>
-        <p class="fullscreen-welcome-note">If fullscreen isn’t available, the story will still open.</p>
+        <h1>A Book of Promises</h1>
+        <p class="fullscreen-welcome-dedication">For my Bangaram, with all my love.</p>
+        <button class="fullscreen-welcome-button" id="fullscreen-start" type="button">Open Our Story <span aria-hidden="true">♡</span></button>
+        <p class="fullscreen-welcome-note">Turn each page to read the promises in my heart.</p>
       </div>
     </div>
     <main class="site-pages" id="site-pages">
@@ -421,5 +422,10 @@
       </div>
     </section>
     </main>
+    <nav class="book-controls" id="book-controls" aria-label="Book navigation" hidden>
+      <button class="book-control-button book-control-button--previous" id="book-previous" type="button" aria-label="Turn to previous page"><span aria-hidden="true">←</span><span class="book-control-label">Previous</span></button>
+      <p class="book-progress" id="book-progress" aria-live="polite">Page 1 of 5</p>
+      <button class="book-control-button book-control-button--next" id="book-next" type="button" aria-label="Turn to next page"><span class="book-control-label">Turn page</span><span aria-hidden="true">→</span></button>
+    </nav>
   </body>
 </html>
