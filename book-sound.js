@@ -64,6 +64,25 @@
     return at / buffer.sampleRate;
   }
 
+  /*
+    Every recording is split into the three things a page does:
+      pickup   the corner being taken and lifted (first ~0.1 s)
+      travel   the rustle while the sheet is in the air
+      landing  the flap onto the stack, and its short tail
+    A turn is assembled from these parts, often from different recordings,
+    and each part is shaped by how that page is actually being turned.
+  */
+  function describe(buffer) {
+    const hit = findLanding(buffer);
+    const pickupEnd = clamp(hit * .22, .05, .12);
+    return {
+      buffer, hit,
+      pickup: [0, pickupEnd],
+      travel: [pickupEnd, Math.max(pickupEnd + .08, hit - .05)],
+      landing: [Math.max(0, hit - .03), buffer.duration],
+    };
+  }
+
   // Decoded with an offline context, so no user gesture is needed to load.
   function loadRecordings() {
     const Offline = window.OfflineAudioContext || window.webkitOfflineAudioContext;
@@ -73,19 +92,28 @@
     Promise.all(RECORDINGS.map((url) => fetch(url)
       .then((response) => { if (!response.ok) throw new Error(url); return response.arrayBuffer(); })
       .then(decode)
-      .then((buffer) => ({ buffer, hit: findLanding(buffer) }))
+      .then(describe)
       .catch(() => null)))
       .then((list) => { clips = list.filter(Boolean); });
   }
 
-  function pickClip() {
-    let index = Math.floor(Math.random() * clips.length);
-    if (clips.length > 1 && index === lastClip) index = (index + 1) % clips.length;
+  /*
+    Choose a recording from a physical value (0..1) instead of at random, so
+    the same kind of grab tends toward the same character, with a little
+    natural spread, and never the identical recording twice in a row.
+  */
+  function clipFor(value, avoid = -1) {
+    const n = clips.length;
+    let index = clamp(Math.floor((value + rand(-.18, .18)) * n), 0, n - 1);
+    if (n > 1 && (index === avoid || index === lastClip)) index = (index + 1 + Math.floor(Math.random() * (n - 1))) % n;
     lastClip = index;
-    return clips[index];
+    return { clip: clips[index], index };
   }
 
-  function playClip(clip, { when, offset = 0, rate = 1, level = 1, pan = 0, tone = 0, fadeIn = 0, length = 0 }) {
+  function playClip(clip, {
+    when, offset = 0, rate = 1, level = 1, pan = 0, panTo = -pan, tone = 0,
+    fadeIn = 0, length = 0, fadeOut = 0,
+  }) {
     const source = ctx.createBufferSource();
     source.buffer = clip.buffer;
     source.playbackRate.value = rate;
@@ -93,59 +121,135 @@
     gain.gain.setValueAtTime(fadeIn ? 0 : level, when);
     if (fadeIn) gain.gain.linearRampToValueAtTime(level, when + fadeIn);
     if (length) {
-      const fadeOut = Math.min(.04, length * .4);
-      gain.gain.setValueAtTime(level, when + length - fadeOut);
+      const out = fadeOut || Math.min(.04, length * .4);
+      gain.gain.setValueAtTime(level, when + length - out);
       gain.gain.linearRampToValueAtTime(0, when + length);
     }
-    let out = source;
+    let node = source;
     if (tone) {
       const lowpass = ctx.createBiquadFilter();
       lowpass.type = "lowpass";
-      lowpass.frequency.value = tone;
-      out = out.connect(lowpass);
+      lowpass.frequency.value = Math.min(tone, ctx.sampleRate * .45);
+      node = node.connect(lowpass);
     }
-    out = out.connect(gain);
-    if (pan && ctx.createStereoPanner) {
+    node = node.connect(gain);
+    if ((pan || panTo) && ctx.createStereoPanner) {
       const panner = ctx.createStereoPanner();
       const span = length || (clip.buffer.duration - offset) / rate;
-      panner.pan.setValueAtTime(pan, when);
-      panner.pan.linearRampToValueAtTime(-pan, when + span * .9);
-      out = out.connect(panner);
+      panner.pan.setValueAtTime(clamp(pan, -1, 1), when);
+      panner.pan.linearRampToValueAtTime(clamp(panTo, -1, 1), when + span);
+      node = node.connect(panner);
     }
-    out.connect(master);
-    out.connect(room);
+    node.connect(master);
+    node.connect(room);
     source.start(when, offset);
     if (length) source.stop(when + length + .01);
     return source;
   }
 
-  /*
-    Line the recording's landing up with the animation's landing. The clip
-    is sped up or slowed a little (never enough to sound wrong); whatever is
-    left is absorbed by starting slightly late, or by skipping into the
-    rustle when the animation is shorter than the recording.
-  */
-  function turnRecorded({ duration, hard, level, lifted }) {
-    const clip = pickClip();
-    const now = ctx.currentTime + .005;
-    const land = Math.max(.12, duration * .96);
-    const rate = hard ? rand(.7, .78) : clamp(clip.hit / land, .88, 1.14) * rand(.97, 1.03);
-    const earliest = lifted ? 0 : clip.hit * .35;      // after a drag the page is already up
-    const travel = (clip.hit - earliest) / rate;
-    let delay = 0;
-    let offset = earliest;
-    if (travel <= land) delay = land - travel;
-    else offset = clip.hit - land * rate;
+  // Pages near either cover pull stiffer at the spine than mid-book pages.
+  const stiffness = (depth) => 1 - Math.min(depth, 1 - depth) * 2;
+
+  // Pickup: a pinched corner crackles sharper and higher than an edge grab.
+  function pickup(when, t) {
+    const cornerness = t.corner === "top" ? 1 - t.grabY : t.grabY;      // 1 = right at the corner
+    const { clip } = clipFor(cornerness);
+    const [a, b] = clip.pickup;
+    const length = b - a;
+    const rate = (.94 + cornerness * .12 + stiffness(t.depth) * .06) * rand(.98, 1.02);
+    const side = t.spread ? .45 : .2;
     playClip(clip, {
-      when: now + delay, offset, rate, level: level * (hard ? 1.1 : 1),
-      pan: hard ? .12 : .28, tone: hard ? 2800 : 0, fadeIn: offset > .01 ? .03 : 0,
+      when, offset: a, rate, length: length / rate, fadeOut: .02,
+      level: t.level * (.45 + cornerness * .35 + stiffness(t.depth) * .2),
+      tone: 5000 + cornerness * 9000,
+      pan: t.forward ? side : -side, panTo: t.forward ? side * .8 : -side * .8,
     });
-    if (hard) {
-      thud ??= toBuffer(normalize(makeThud(), .7));
-      play(thud, { when: now + land - .005, level: level * .85 });
+  }
+
+  /*
+    Travel: overlapping slices of real rustle laid along the turn. Their
+    loudness follows the page's actual speed through the animation (slow as
+    it lifts, fastest mid-flight, slowing as it lands); faster and more
+    tightly curled pages sound brighter. The sound moves across with the page.
+  */
+  function travel(when, length, t) {
+    const slice = .15;
+    const hop = slice / 2;
+    const speedAt = t.curve === "out"
+      ? (u) => (1 - u) ** 2                                  // released drag: fastest first
+      : (u) => (u < .5 ? (2 * u) ** 2 : (2 * (1 - u)) ** 2);   // eased turn: fastest mid-way
+    const side = t.spread ? .5 : .25;
+    let previous = -1;
+    for (let time = 0; time < length - hop * .5; time += hop) {
+      const u = (time + hop) / length;
+      const intensity = .18 + .82 * speedAt(clamp(u, 0, 1));
+      const { clip, index } = clipFor(Math.random(), previous);
+      previous = index;
+      const [a, b] = clip.travel;
+      const rate = (.9 + t.pace * .2 + t.bend * .06) * rand(.97, 1.03);
+      const position = t.forward ? side * (1 - 2 * u) : -side * (1 - 2 * u);
+      playClip(clip, {
+        when: when + time,
+        offset: rand(a, Math.max(a, b - slice * rate)),
+        rate,
+        length: slice,
+        fadeIn: slice / 2,
+        fadeOut: slice / 2,
+        level: t.level * intensity * (.45 + t.pace * .55) * (t.snapBack ? .6 : 1),
+        tone: 2600 + t.pace * 7000 + t.bend * 3000,
+        pan: position,
+        panTo: position + (t.forward ? -1 : 1) * side * (2 * hop / length),
+      });
     }
   }
 
+  // Landing: thin stacks (near the board) sound duller and deeper; thick
+  // stacks lighter. A flick slaps; a guided page settles; a page let go
+  // early just slides back onto its own stack.
+  function landing(when, t) {
+    const { clip } = clipFor(t.stack);
+    const [a] = clip.landing;
+    const rate = (.86 + t.stack * .2 + t.pace * .06) * rand(.98, 1.02);
+    const length = Math.min(.28, (clip.buffer.duration - a) / rate);
+    const side = t.spread ? .5 : .2;
+    playClip(clip, {
+      when: when - (clip.hit - a) / rate, offset: a, rate, length,
+      fadeOut: .06,
+      level: t.level * (.4 + t.pace * .7) * (t.snapBack ? .35 : 1),
+      tone: 1500 + t.stack * 4500 + t.pace * 4000,
+      pan: t.forward ? -side : side, panTo: t.forward ? -side : side,
+    });
+    // Right against the board, the cover gives the flap a little body.
+    if (t.stack < .1 && !t.snapBack) {
+      thud ??= toBuffer(normalize(makeThud(), .7));
+      play(thud, { when, level: t.level * .18 * (1 - t.stack * 10) });
+    }
+  }
+
+  function turnRecorded(t) {
+    const now = ctx.currentTime + .005;
+    const land = Math.max(.12, t.duration * .96);
+    if (t.hard) {
+      // A board: a page recording slowed and muffled, with a low thud.
+      const { clip } = clipFor(Math.random());
+      const rate = rand(.7, .78);
+      const travelTime = clip.hit / rate;
+      const delay = Math.max(0, land - travelTime);
+      const offset = travelTime > land ? clip.hit - land * rate : 0;
+      playClip(clip, {
+        when: now + delay, offset, rate, level: t.level * 1.1, pan: .12, tone: 2800,
+        fadeIn: offset > .01 ? .03 : 0,
+      });
+      thud ??= toBuffer(normalize(makeThud(), .7));
+      // Closing onto the page block is firmer than opening onto the desk.
+      play(thud, { when: now + land - .005, level: t.level * (t.forward ? .75 : .95) });
+      return;
+    }
+    const lead = t.lifted ? .09 : 0;
+    if (t.lifted) pickup(now, t);
+    travel(now + lead * .6, Math.max(.1, land - lead * .6), t);
+    landing(now + land, t);
+  }
   /* ---- Tiny DSP toolkit (RBJ biquads, run in place) --------------------- */
 
   function biquad(type, frequency, q, gainDb = 0) {
@@ -412,10 +516,17 @@
     level     overall loudness (riffles and snap-backs are quieter)
     lifted    false when continuing from a drag (the corner is already up)
   */
-  function turn({ duration = .85, hard = false, level = 1, lifted = true } = {}) {
+  const TURN_DEFAULTS = {
+    duration: .85, hard: false, level: 1, lifted: true, forward: true,
+    depth: .5, stack: .5, spread: false, corner: "bottom", grabY: .9,
+    bend: .35, pace: .65, curve: "inout", snapBack: false,
+  };
+
+  function turn(options = {}) {
     if (!ready()) return;
-    if (clips.length) { turnRecorded({ duration, hard, level, lifted }); return; }
-    play(take(hard, Math.max(.15, duration), lifted), { pan: hard ? .15 : .3, level });
+    const t = { ...TURN_DEFAULTS, ...options };
+    if (clips.length) { turnRecorded(t); return; }
+    play(take(t.hard, Math.max(.15, t.duration), t.lifted), { pan: t.hard ? .15 : .3, level: t.level });
   }
 
   /*
@@ -462,9 +573,9 @@
   function peel() {
     if (!ready()) return;
     if (clips.length) {
-      // A brief slice of real rustle from early in a turn.
-      const clip = pickClip();
-      playClip(clip, { when: ctx.currentTime + .005, offset: clip.hit * rand(.1, .3), level: .3, fadeIn: .015, length: .1 });
+      // The corner lifting slightly under the cursor: a faint pickup.
+      const { clip } = clipFor(.85);
+      playClip(clip, { when: ctx.currentTime + .005, offset: clip.pickup[0], length: .09, level: .22, fadeOut: .03, tone: 9000 });
       return;
     }
     const sr = ctx.sampleRate;
@@ -476,11 +587,15 @@
 
   // Continuous rustle while the reader holds the page.
   let beds = null;
-  function dragStart(hard = false) {
+  function dragStart(options = {}) {
+    const t = { ...TURN_DEFAULTS, ...(typeof options === "boolean" ? { hard: options } : options) };
+    const hard = t.hard;
     if (!ready() || drag) return;
     if (clips.length) {
-      drag = { hard, speed: 0, timer: window.setInterval(dragGrain, 55) };
-      if (!hard) peel();
+      // The reader's own grab decides the pickup; the rustle then follows
+      // the page live, and stops whenever the page is held still.
+      drag = { hard, t, speed: 0, bend: t.bend, progress: 0, previous: -1, timer: window.setInterval(dragGrain, 70) };
+      if (!hard) pickup(ctx.currentTime + .005, { ...t, level: .9 });
       return;
     }
     beds ??= { soft: renderDragBed(false), hard: renderDragBed(true) };
@@ -505,24 +620,34 @@
   function dragGrain() {
     if (!drag || !ready() || !clips.length) return;
     const amount = clamp(Math.abs(drag.speed) / 1.4, 0, 1);
-    if (amount < .04) return;
-    const clip = pickClip();
-    const length = rand(.12, .2);
+    drag.speed *= .6;                      // decays unless the pointer keeps moving
+    if (amount < .03) return;
+    const { clip, index } = clipFor(Math.random(), drag.previous);
+    drag.previous = index;
+    const [a, b] = clip.travel;
+    const slice = .14;
+    const rate = drag.hard ? .75 : (.9 + amount * .22 + drag.bend * .06) * rand(.97, 1.03);
+    const side = drag.t.spread ? .45 : .2;
+    const direction = drag.t.forward ? 1 : -1;
     playClip(clip, {
       when: ctx.currentTime + .005,
-      offset: rand(.03, Math.max(.05, clip.hit - length - .04)),
-      length,
-      rate: drag.hard ? .75 : rand(.95, 1.08),
-      level: (drag.hard ? .35 : .7) * amount ** .8,
-      fadeIn: length * .4,
-      tone: drag.hard ? 2400 : 0,
+      offset: rand(a, Math.max(a, b - slice * rate)),
+      length: slice, fadeIn: slice / 2, fadeOut: slice / 2, rate,
+      level: (drag.hard ? .35 : .75) * amount ** .7,
+      tone: drag.hard ? 2400 : 2600 + amount * 7000 + drag.bend * 3000,
+      pan: direction * side * .8,
     });
   }
 
   // speed: pointer speed in px/ms. Faster drags are louder and brighter.
-  function dragMove(speed) {
+  function dragMove(input) {
     if (!drag || !ctx) return;
-    if (drag.timer !== undefined) { drag.speed = speed; return; }
+    const speed = typeof input === "number" ? input : input.speed;
+    if (drag.timer !== undefined) {
+      drag.speed = speed;
+      if (typeof input === "object" && input.bend !== undefined) drag.bend = input.bend;
+      return;
+    }
     const now = ctx.currentTime;
     const amount = clamp(Math.abs(speed) / 1.4, 0, 1);
     drag.gain.gain.setTargetAtTime((drag.hard ? .35 : .9) * amount ** .8, now, .04);
