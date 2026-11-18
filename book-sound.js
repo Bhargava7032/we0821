@@ -1,8 +1,16 @@
 "use strict";
 /* ==========================================================================
-   Book sound: page-turn audio synthesized from scratch (no audio files)
+   Book sound: page-turn audio
    --------------------------------------------------------------------------
-   Modelled on a 70–80 GSM book page:
+   Real recordings first. sounds/page-turn-1…5.m4a are single page turns of
+   a printed book (CC0, "Book Flip Sounds" by Voltiment555, opengameart.org),
+   trimmed and level-matched. Each turn plays one of them, never the same
+   twice in a row, with its landing lined up to the moment the page lands.
+   The cover uses a recording slowed and muffled, with a low board thud.
+   Dragging plays short overlapping slices of real rustle at pointer speed.
+
+   Fallback: if the recordings cannot load, the synthesized model below is
+   used instead, modelled on a 70–80 GSM book page:
      crinkle   hundreds of tiny clicks (0.5–5 ms) as the fibres flex; their
                density follows how sharply the sheet is bending
      rustle    bright friction noise (energy around 2–6 kHz) whose loudness
@@ -33,6 +41,110 @@
   const rand = (min, max) => min + Math.random() * (max - min);
   const white = () => Math.random() * 2 - 1;
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+  const idle = (fn) => (window.requestIdleCallback ? window.requestIdleCallback(fn, { timeout: 2000 }) : window.setTimeout(fn, 250));
+
+  /* ---- Recorded page turns --------------------------------------------- */
+
+  const RECORDINGS = [1, 2, 3, 4, 5].map((n) => `./sounds/page-turn-${n}.m4a`);
+  let clips = [];          // { buffer, hit }: hit = seconds until the page lands
+  let lastClip = -1;
+  let thud = null;
+
+  // The landing is the loudest moment after the first third of the clip.
+  function findLanding(buffer) {
+    const data = buffer.getChannelData(0);
+    const hop = Math.floor(buffer.sampleRate * .005);
+    let best = 0;
+    let at = 0;
+    for (let i = Math.floor(data.length / 3); i + hop < data.length; i += hop) {
+      let sum = 0;
+      for (let j = 0; j < hop; j += 1) sum += data[i + j] * data[i + j];
+      if (sum > best) { best = sum; at = i; }
+    }
+    return at / buffer.sampleRate;
+  }
+
+  // Decoded with an offline context, so no user gesture is needed to load.
+  function loadRecordings() {
+    const Offline = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    if (!Offline || !window.fetch) return;
+    const decoder = new Offline(1, 1, 44100);
+    const decode = (data) => new Promise((resolve, reject) => decoder.decodeAudioData(data, resolve, reject));
+    Promise.all(RECORDINGS.map((url) => fetch(url)
+      .then((response) => { if (!response.ok) throw new Error(url); return response.arrayBuffer(); })
+      .then(decode)
+      .then((buffer) => ({ buffer, hit: findLanding(buffer) }))
+      .catch(() => null)))
+      .then((list) => { clips = list.filter(Boolean); });
+  }
+
+  function pickClip() {
+    let index = Math.floor(Math.random() * clips.length);
+    if (clips.length > 1 && index === lastClip) index = (index + 1) % clips.length;
+    lastClip = index;
+    return clips[index];
+  }
+
+  function playClip(clip, { when, offset = 0, rate = 1, level = 1, pan = 0, tone = 0, fadeIn = 0, length = 0 }) {
+    const source = ctx.createBufferSource();
+    source.buffer = clip.buffer;
+    source.playbackRate.value = rate;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(fadeIn ? 0 : level, when);
+    if (fadeIn) gain.gain.linearRampToValueAtTime(level, when + fadeIn);
+    if (length) {
+      const fadeOut = Math.min(.04, length * .4);
+      gain.gain.setValueAtTime(level, when + length - fadeOut);
+      gain.gain.linearRampToValueAtTime(0, when + length);
+    }
+    let out = source;
+    if (tone) {
+      const lowpass = ctx.createBiquadFilter();
+      lowpass.type = "lowpass";
+      lowpass.frequency.value = tone;
+      out = out.connect(lowpass);
+    }
+    out = out.connect(gain);
+    if (pan && ctx.createStereoPanner) {
+      const panner = ctx.createStereoPanner();
+      const span = length || (clip.buffer.duration - offset) / rate;
+      panner.pan.setValueAtTime(pan, when);
+      panner.pan.linearRampToValueAtTime(-pan, when + span * .9);
+      out = out.connect(panner);
+    }
+    out.connect(master);
+    out.connect(room);
+    source.start(when, offset);
+    if (length) source.stop(when + length + .01);
+    return source;
+  }
+
+  /*
+    Line the recording's landing up with the animation's landing. The clip
+    is sped up or slowed a little (never enough to sound wrong); whatever is
+    left is absorbed by starting slightly late, or by skipping into the
+    rustle when the animation is shorter than the recording.
+  */
+  function turnRecorded({ duration, hard, level, lifted }) {
+    const clip = pickClip();
+    const now = ctx.currentTime + .005;
+    const land = Math.max(.12, duration * .96);
+    const rate = hard ? rand(.7, .78) : clamp(clip.hit / land, .88, 1.14) * rand(.97, 1.03);
+    const earliest = lifted ? 0 : clip.hit * .35;      // after a drag the page is already up
+    const travel = (clip.hit - earliest) / rate;
+    let delay = 0;
+    let offset = earliest;
+    if (travel <= land) delay = land - travel;
+    else offset = clip.hit - land * rate;
+    playClip(clip, {
+      when: now + delay, offset, rate, level: level * (hard ? 1.1 : 1),
+      pan: hard ? .12 : .28, tone: hard ? 2800 : 0, fadeIn: offset > .01 ? .03 : 0,
+    });
+    if (hard) {
+      thud ??= toBuffer(normalize(makeThud(), .7));
+      play(thud, { when: now + land - .005, level: level * .85 });
+    }
+  }
 
   /* ---- Tiny DSP toolkit (RBJ biquads, run in place) --------------------- */
 
@@ -174,6 +286,18 @@
     return normalize(data, .55 * level);
   }
 
+  function makeThud() {
+    const sr = ctx.sampleRate;
+    const thud = new Float32Array(Math.floor(sr * .18));
+    for (let i = 0; i < thud.length; i += 1) {
+      const t = i / sr;
+      thud[i] = Math.sin(2 * Math.PI * 82 * t) * Math.exp(-t / .07) * .9
+        + Math.sin(2 * Math.PI * 190 * t) * Math.exp(-t / .035) * .45
+        + white() * Math.exp(-t / .012) * .5;
+    }
+    return filter(thud, ["lowpass", 1400, .7]);
+  }
+
   function renderBoard(seconds, level) {
     const sr = ctx.sampleRate;
     const length = Math.floor(sr * seconds);
@@ -195,15 +319,7 @@
 
     // Thud: the board settling onto the page block.
     const at = Math.floor(length * .97);
-    const thud = new Float32Array(Math.floor(sr * .18));
-    for (let i = 0; i < thud.length; i += 1) {
-      const t = i / sr;
-      thud[i] = Math.sin(2 * Math.PI * 82 * t) * Math.exp(-t / .07) * .9
-        + Math.sin(2 * Math.PI * 190 * t) * Math.exp(-t / .035) * .45
-        + white() * Math.exp(-t / .012) * .5;
-    }
-    filter(thud, ["lowpass", 1400, .7]);
-    mixInto(data, thud, 1, at);
+    mixInto(data, makeThud(), 1, at);
     crinkle(data, at + Math.floor(sr * .02), Math.floor(sr * .08), 200, .06, (u) => 1 - u, .002);
     return normalize(data, .7 * level);
   }
@@ -260,7 +376,7 @@
       room = ctx.createGain();
       room.gain.value = .16;
       room.connect(convolver).connect(master);
-      prewarm();
+      window.setTimeout(prewarm, 1500);   // only renders if the recordings failed
     }
     if (ctx.state === "suspended") ctx.resume().catch(() => {});
   }
@@ -298,6 +414,7 @@
   */
   function turn({ duration = .85, hard = false, level = 1, lifted = true } = {}) {
     if (!ready()) return;
+    if (clips.length) { turnRecorded({ duration, hard, level, lifted }); return; }
     play(take(hard, Math.max(.15, duration), lifted), { pan: hard ? .15 : .3, level });
   }
 
@@ -307,7 +424,6 @@
     time. Lengths are bucketed to 50 ms; anything unusual renders live.
   */
   const pool = new Map();
-  const idle = (fn) => (window.requestIdleCallback ? window.requestIdleCallback(fn, { timeout: 2000 }) : window.setTimeout(fn, 250));
   const bucket = (seconds) => Math.round(seconds * 20) / 20;
   const poolKey = (hard, seconds, lifted) => `${hard ? "board" : "page"}:${bucket(seconds)}:${hard ? "" : lifted}`;
   const render = (hard, seconds, lifted) => toBuffer(hard ? renderBoard(seconds, 1) : renderPage(seconds, 1, lifted));
@@ -335,6 +451,7 @@
 
   // Turn lengths used by script.js: button turns, cover, and riffles.
   function prewarm() {
+    if (clips.length) return;
     refill(false, .85, true);
     refill(true, 1.05, false);
     refill(false, .62, true);
@@ -344,6 +461,12 @@
 
   function peel() {
     if (!ready()) return;
+    if (clips.length) {
+      // A brief slice of real rustle from early in a turn.
+      const clip = pickClip();
+      playClip(clip, { when: ctx.currentTime + .005, offset: clip.hit * rand(.1, .3), level: .3, fadeIn: .015, length: .1 });
+      return;
+    }
     const sr = ctx.sampleRate;
     const data = new Float32Array(Math.floor(sr * .08));
     crinkle(data, 0, data.length, 500, .6, (u) => 1 - u, .003);
@@ -355,6 +478,11 @@
   let beds = null;
   function dragStart(hard = false) {
     if (!ready() || drag) return;
+    if (clips.length) {
+      drag = { hard, speed: 0, timer: window.setInterval(dragGrain, 55) };
+      if (!hard) peel();
+      return;
+    }
     beds ??= { soft: renderDragBed(false), hard: renderDragBed(true) };
     const now = ctx.currentTime;
     const source = ctx.createBufferSource();
@@ -373,9 +501,28 @@
     if (!hard) peel();
   }
 
+  // Short overlapping slices of recorded rustle, as loud as the drag is fast.
+  function dragGrain() {
+    if (!drag || !ready() || !clips.length) return;
+    const amount = clamp(Math.abs(drag.speed) / 1.4, 0, 1);
+    if (amount < .04) return;
+    const clip = pickClip();
+    const length = rand(.12, .2);
+    playClip(clip, {
+      when: ctx.currentTime + .005,
+      offset: rand(.03, Math.max(.05, clip.hit - length - .04)),
+      length,
+      rate: drag.hard ? .75 : rand(.95, 1.08),
+      level: (drag.hard ? .35 : .7) * amount ** .8,
+      fadeIn: length * .4,
+      tone: drag.hard ? 2400 : 0,
+    });
+  }
+
   // speed: pointer speed in px/ms. Faster drags are louder and brighter.
   function dragMove(speed) {
     if (!drag || !ctx) return;
+    if (drag.timer !== undefined) { drag.speed = speed; return; }
     const now = ctx.currentTime;
     const amount = clamp(Math.abs(speed) / 1.4, 0, 1);
     drag.gain.gain.setTargetAtTime((drag.hard ? .35 : .9) * amount ** .8, now, .04);
@@ -383,6 +530,7 @@
   }
 
   function dragEnd() {
+    if (drag?.timer !== undefined) { window.clearInterval(drag.timer); drag = null; return; }
     if (!drag || !ctx) { drag = null; return; }
     const { source, gain } = drag;
     const now = ctx.currentTime;
@@ -404,9 +552,13 @@
     document.addEventListener(type, unlock, { capture: true, passive: true });
   });
 
+  if (document.readyState === "complete") idle(loadRecordings);
+  else window.addEventListener("load", () => idle(loadRecordings), { once: true });
+
   window.BookSound = {
     turn, peel, dragStart, dragMove, dragEnd, setMuted, unlock,
     get muted() { return muted; },
     get running() { return Boolean(ctx && ctx.state === "running"); },
+    get recordings() { return clips.length; },
   };
 })();
