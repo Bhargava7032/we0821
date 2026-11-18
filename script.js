@@ -571,8 +571,9 @@ function updateChrome() {
   const visible = visiblePages();
   const total = state.pages.length;
   let label = "Cover";
+  const compact = window.innerWidth < 420;
   if (visible.length === 2) label = `Pages ${visible[0].folio}–${visible[1].folio} of ${total}`;
-  else if (visible.length === 1) label = `Page ${visible[0].folio} of ${total}`;
+  else if (visible.length === 1) label = compact ? `${visible[0].folio} / ${total}` : `Page ${visible[0].folio} of ${total}`;
   else if (k > 0) label = "The End";
   progressLabel.textContent = label;
   prevButton.disabled = k <= 0;
@@ -685,6 +686,11 @@ nextButton.addEventListener("click", () => go(1));
 contentsButton.addEventListener("click", () => goToAnchor("contents"));
 
 document.addEventListener("keydown", (event) => {
+  const tip = document.getElementById("install-tip");
+  if (tip && !tip.hidden) {
+    if (event.key === "Escape") { event.preventDefault(); tip.querySelector("button")?.click(); }
+    return;
+  }
   if (event.altKey || event.ctrlKey || event.metaKey) return;
   if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable='true']")) return;
   const keys = { ArrowRight: 1, PageDown: 1, ArrowLeft: -1, PageUp: -1 };
@@ -896,15 +902,54 @@ function enterFullscreen() {
 
 // On phones, opening the cover (a user gesture) also enters fullscreen once.
 function requestReaderFullscreen() {
-  if (autoFullscreenTried || !coarsePointer.matches || !fullscreenSupported) return;
+  if (autoFullscreenTried || !coarsePointer.matches) return;
   autoFullscreenTried = true;
-  if (!document.fullscreenElement) enterFullscreen();
+  if (fullscreenSupported) {
+    if (!fullscreenElement()) enterFullscreen();
+    return;
+  }
+  // iPhone: offer the Home Screen route once, the first time the book opens.
+  let seen = false;
+  try { seen = window.localStorage.getItem("book-install-tip") === "seen"; } catch { /* storage unavailable */ }
+  if (iPhoneSafari && !seen) window.setTimeout(showInstallTip, 1200);
 }
 
-if (fullscreenSupported && fullscreenButton) {
+const fullscreenElement = () => document.fullscreenElement || document.webkitFullscreenElement;
+const runningAsApp = window.navigator.standalone === true
+  || window.matchMedia("(display-mode: standalone)").matches
+  || window.matchMedia("(display-mode: fullscreen)").matches;
+// iPhone Safari cannot put a page in full screen; saving the book to the
+// Home Screen is the only way, so the button explains how instead.
+const iPhoneSafari = /iPhone|iPod/.test(navigator.userAgent) && !fullscreenSupported && !runningAsApp;
+document.documentElement.classList.toggle("is-iphone-safari", iPhoneSafari);
+
+const installTip = document.getElementById("install-tip");
+const installTipClose = document.getElementById("install-tip-close");
+let tipReturnFocus = null;
+
+function showInstallTip() {
+  if (!installTip) return;
+  tipReturnFocus = document.activeElement;
+  installTip.hidden = false;
+  installTipClose?.focus();
+  try { window.localStorage.setItem("book-install-tip", "seen"); } catch { /* storage unavailable */ }
+}
+
+function hideInstallTip() {
+  if (!installTip || installTip.hidden) return;
+  installTip.hidden = true;
+  tipReturnFocus?.focus?.();
+}
+
+installTipClose?.addEventListener("click", hideInstallTip);
+installTip?.addEventListener("click", (event) => { if (event.target === installTip) hideInstallTip(); });
+
+if (fullscreenButton && !runningAsApp && (fullscreenSupported || iPhoneSafari)) {
   fullscreenButton.hidden = false;
+  if (iPhoneSafari) fullscreenButton.setAttribute("aria-label", "How to read in full screen");
   fullscreenButton.addEventListener("click", () => {
-    if (document.fullscreenElement) document.exitFullscreen?.();
+    if (iPhoneSafari) { showInstallTip(); return; }
+    if (fullscreenElement()) (document.exitFullscreen || document.webkitExitFullscreen)?.call(document);
     else enterFullscreen();
   });
 }
