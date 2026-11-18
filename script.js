@@ -805,9 +805,12 @@ book.addEventListener("pointermove", (event) => {
     // Bend grows as the corner is lifted away from its edge.
     const grab = drag.leaf.grab;
     if (grab) grab.bend = clamp(.2 + Math.abs(event.clientY - drag.y0) / (state.H * .35), .2, 1);
+    const pose = drag.leaf.pose;
     window.BookSound?.dragMove({
       speed: (recent[recent.length - 1].x - recent[0].x) / Math.max(8, span),
       bend: grab?.bend ?? .3,
+      // How far across the page has travelled: 0 flat, 0.5 upright, 1 turned.
+      progress: pose?.P ? clamp((state.W - pose.P.x) / (2 * state.W), 0, 1) : (pose?.t ?? 0),
     });
   }
   const { W } = state;
