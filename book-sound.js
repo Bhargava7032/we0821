@@ -7,9 +7,8 @@
    trimmed and level-matched. Each turn plays one of them, never the same
    twice in a row, with its landing lined up to the moment the page lands.
    The cover uses a recording slowed and muffled, with a low board thud.
-   While a page is held it sounds only when the hand bends, jolts or tips
-   it over (small real crackles, never a continuous rub); the landing plays
-   when it is let go.
+   While a page is dragged it is silent apart from the pickup as the corner
+   is taken; the landing plays when it is let go.
 
    Fallback: if the recordings cannot load, the synthesized model below is
    used instead, modelled on a 70–80 GSM book page:
@@ -582,12 +581,9 @@
     if (clips.length) {
       // The reader's own grab decides the pickup; the rustle then follows
       // the page live, and stops whenever the page is held still.
-      // The pickup as the corner is taken; after that the page only sounds
-      // when the hand bends, jolts or tips it over (see dragMove).
-      drag = {
-        hard, quiet: true, t, bend: t.bend, speed: 0, direction: 0,
-        lastFlex: ctx.currentTime, tipped: false,
-      };
+      // Only the small pickup as the corner is taken; the page then moves
+      // silently until it lands.
+      drag = { hard, quiet: true };
       if (!hard) pickup(ctx.currentTime + .005, { ...t, level: .8 });
       return;
     }
@@ -609,76 +605,11 @@
     if (!hard) peel();
   }
 
-  /*
-    A held page is quiet until the hand does something paper reacts to:
-      bending further   a small crackle; keep bending and they recur
-      a jolt or a change of direction   a stronger crackle as it buckles
-      tipping past upright   one soft flip
-    A short minimum gap between crackles keeps them from smearing into a rub.
-  */
-  function flexWhileHeld(input) {
-    if (drag.hard || typeof input !== "object" || !clips.length) return;
-    const now = ctx.currentTime;
-    const speed = input.speed ?? 0;
-    const bend = input.bend ?? drag.bend;
-    const direction = Math.abs(speed) > .15 ? Math.sign(speed) : 0;
-    const reversed = direction && drag.direction && direction !== drag.direction;
-    const jolt = Math.abs(speed - drag.speed) > .9;
-    const bent = Math.abs(bend - drag.bend);
-
-    let strength = 0;
-    if (bent > .1) strength = Math.min(1, bent * 3);
-    if (reversed) strength = Math.max(strength, .7);
-    if (jolt) strength = Math.max(strength, .5);
-    if (strength && now - drag.lastFlex > .16) {
-      crackle(now, strength, bend);
-      drag.lastFlex = now;
-      drag.bend = bend;
-    }
-
-    const progress = input.progress;
-    const pastUpright = drag.t.forward ? progress > .5 : progress < .5;
-    if (!drag.tipped && progress !== undefined && pastUpright) {
-      drag.tipped = true;
-      tipOver(now, bend);
-    }
-    drag.speed = speed;
-    if (direction) drag.direction = direction;
-  }
-
-  // A tiny slice of the crackliest part of a real recording (its pickup).
-  function crackle(now, strength, bend) {
-    const { clip } = clipFor(Math.random());
-    const [a, b] = clip.pickup;
-    const length = rand(.05, .09);
-    const rate = (.95 + bend * .15) * rand(.95, 1.05);
-    const side = drag.t.spread ? .35 : .15;
-    playClip(clip, {
-      when: now + .005, offset: rand(a, Math.max(a, b - length * rate)), rate, length,
-      fadeIn: .006, fadeOut: length * .5,
-      level: .45 + strength * .6,
-      tone: 5000 + bend * 8000,
-      pan: drag.t.forward ? side : -side,
-    });
-  }
-
-  // The sheet tipping over the top: a soft flap of air, not a landing.
-  function tipOver(now, bend) {
-    const { clip } = clipFor(Math.random());
-    const [, end] = clip.travel;
-    const length = .12;
-    playClip(clip, {
-      when: now + .005, offset: Math.max(0, end - length), length,
-      fadeIn: .03, fadeOut: .06, rate: rand(.95, 1.05),
-      level: .45 + bend * .2, tone: 6000,
-    });
-  }
-
   // speed: pointer speed in px/ms. Faster drags are louder and brighter.
   function dragMove(input) {
     if (!drag || !ctx) return;
     const speed = typeof input === "number" ? input : input.speed;
-    if (drag.quiet) { flexWhileHeld(input); return; }
+    if (drag.quiet) return;
     const now = ctx.currentTime;
     const amount = clamp(Math.abs(speed) / 1.4, 0, 1);
     drag.gain.gain.setTargetAtTime((drag.hard ? .35 : .9) * amount ** .8, now, .04);
