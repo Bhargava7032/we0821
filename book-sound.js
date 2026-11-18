@@ -83,17 +83,30 @@
     };
   }
 
-  // Decoded with an offline context, so no user gesture is needed to load.
+  /*
+    Decoded with an offline context, so no user gesture is needed to load.
+    sounds/recordings.js carries the same files as base64, which works even
+    when the book is opened straight from disk (file://), where fetch() is
+    blocked. The .m4a files are fetched only if that script is missing.
+  */
+  function base64ToBuffer(text) {
+    const bytes = window.atob(text);
+    const out = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i += 1) out[i] = bytes.charCodeAt(i);
+    return out.buffer;
+  }
+
   function loadRecordings() {
     const Offline = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-    if (!Offline || !window.fetch) return;
+    if (!Offline) return;
     const decoder = new Offline(1, 1, 44100);
     const decode = (data) => new Promise((resolve, reject) => decoder.decodeAudioData(data, resolve, reject));
-    Promise.all(RECORDINGS.map((url) => fetch(url)
-      .then((response) => { if (!response.ok) throw new Error(url); return response.arrayBuffer(); })
-      .then(decode)
-      .then(describe)
-      .catch(() => null)))
+    const embedded = Array.isArray(window.BOOK_RECORDINGS) ? window.BOOK_RECORDINGS : null;
+    const sources = embedded
+      ? embedded.map((text) => Promise.resolve(base64ToBuffer(text)))
+      : RECORDINGS.map((url) => (window.fetch ? fetch(url) : Promise.reject(new Error("no fetch")))
+        .then((response) => { if (!response.ok) throw new Error(url); return response.arrayBuffer(); }));
+    Promise.all(sources.map((source) => source.then(decode).then(describe).catch(() => null)))
       .then((list) => { clips = list.filter(Boolean); });
   }
 
